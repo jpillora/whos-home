@@ -19,7 +19,7 @@ func main() {
 
 	opts.New(c).
 		Version(VERSION).
-		Repo("github.com/jpillora/whos-home").
+		PkgRepo().
 		Parse()
 
 	log.SetOutput(os.Stderr)

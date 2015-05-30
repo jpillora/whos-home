@@ -7,17 +7,27 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 )
 
 type Config struct {
-	Interfaces []string      `min:"1"`
+	Interfaces []string      `type:"arg" min:"1"`
 	Interval   time.Duration `help:"the interval between scans"`
 	Endpoint   string        `help:"an HTTP POST endpoint (defaults to send to stdout)"`
+	SingleCore bool          `help:"only use a single core (defaults to multicore)"`
 }
 
 func Run(c Config) {
+
+	//logs to stderr
+	log.SetOutput(os.Stderr)
+
+	cpu := runtime.NumCPU()
+	runtime.GOMAXPROCS(cpu)
+	log.Printf("whos-home initializing (#%d cores)", cpu)
+
 	//get all in list
 	ifaces := []*net.Interface{}
 	for _, n := range c.Interfaces {
@@ -31,9 +41,11 @@ func Run(c Config) {
 
 	//prepare queue
 	queue := make(NodeQueue)
+
+	//in a goroutine, extract all nodes from queue
 	go monitor(c.Endpoint, queue)
 
-	//scan all
+	//scan all provided interfaces, append all to queue
 	var wg sync.WaitGroup
 	for _, iface := range ifaces {
 		wg.Add(1)
@@ -51,22 +63,27 @@ func Run(c Config) {
 }
 
 func monitor(endpoint string, queue NodeQueue) {
-	//collect unique nodes
+	//collect unique nodes (thread-safe)
+	l := sync.Mutex{}
 	nodes := NodeSet{}
 	//send out all nodes every 5 seconds
 	go func() {
 		for {
+			l.Lock()
 			send(endpoint, nodes)
 			for k, _ := range nodes {
 				delete(nodes, k)
 			}
+			l.Unlock()
 			time.Sleep(5 * time.Second)
 		}
 		time.Sleep(time.Second)
 	}()
 	//fill nodes map forever
 	for node := range queue {
+		l.Lock()
 		nodes[node.MAC.String()] = node.IP.String()
+		l.Unlock()
 	}
 }
 
