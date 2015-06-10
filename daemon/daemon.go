@@ -2,10 +2,15 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"sync"
@@ -23,6 +28,12 @@ func Run(c Config) {
 
 	//logs to stderr
 	log.SetOutput(os.Stderr)
+
+	//get ip
+	endpoint, err := url.Parse(c.Endpoint)
+	if c.Endpoint != "" && err != nil {
+		log.Fatal("Invalid endpoint: %s", err)
+	}
 
 	cpu := runtime.NumCPU()
 	runtime.GOMAXPROCS(cpu)
@@ -43,7 +54,7 @@ func Run(c Config) {
 	queue := make(NodeQueue)
 
 	//in a goroutine, extract all nodes from queue
-	go monitor(c.Endpoint, queue)
+	go monitor(endpoint, queue)
 
 	//scan all provided interfaces, append all to queue
 	var wg sync.WaitGroup
@@ -62,7 +73,7 @@ func Run(c Config) {
 	return
 }
 
-func monitor(endpoint string, queue NodeQueue) {
+func monitor(endpoint *url.URL, queue NodeQueue) {
 	//collect unique nodes (thread-safe)
 	l := sync.Mutex{}
 	nodes := NodeSet{}
@@ -87,7 +98,9 @@ func monitor(endpoint string, queue NodeQueue) {
 	}
 }
 
-func send(endpoint string, nodes NodeSet) {
+var DNScache = map[string]string{}
+
+func send(endpoint *url.URL, nodes NodeSet) {
 
 	if len(nodes) == 0 {
 		return
@@ -96,20 +109,47 @@ func send(endpoint string, nodes NodeSet) {
 	b, err := json.MarshalIndent(nodes, "", "  ")
 
 	//no endpoint, send to stdout
-	if endpoint == "" {
+	if endpoint == nil {
 		os.Stdout.Write(b)
 		os.Stdout.WriteString("\n")
 		return
 	}
 
-	resp, err := http.Post(endpoint, "application/json", bytes.NewBuffer(b))
+	req, _ := http.NewRequest("POST", endpoint.String(), bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+
+	//hook dns
+	transport := http.Transport{
+		DialTLS: func(network, addr string) (net.Conn, error) {
+			if network != "tcp" {
+				return nil, errors.New("unsupported network")
+			}
+			h, p, _ := net.SplitHostPort(addr)
+			ip, ok := DNScache[h]
+			if !ok {
+				ips, err := net.LookupIP(h)
+				if err != nil {
+					return nil, fmt.Errorf("DNS lookup failed: %s", err)
+				}
+				ip := ips[0].To4().String()
+				log.Printf("DNS lookup: %s -> %s", h, ip)
+				DNScache[h] = ip
+			}
+			return tls.Dial(network, ip+":"+p, &tls.Config{
+				ServerName: h,
+			})
+		},
+	}
+
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		log.Printf("send failed: %s", err)
 		return
 	}
-
+	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		log.Printf("send error: %d", resp.StatusCode)
+		b, _ := ioutil.ReadAll(resp.Body)
+		log.Printf("send error: %d: %s", resp.StatusCode, b)
 		return
 	}
 }
