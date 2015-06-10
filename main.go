@@ -9,8 +9,6 @@ import (
 	"github.com/jpillora/whos-home/daemon"
 )
 
-var VERSION = "0.0.0" //set via ldflags
-
 func main() {
 
 	c := &daemon.Config{
@@ -18,7 +16,7 @@ func main() {
 	}
 
 	opts.New(c).
-		Version(VERSION).
+		Version("0.2.0").
 		PkgRepo().
 		Parse()
 

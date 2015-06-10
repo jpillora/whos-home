@@ -31,7 +31,9 @@ func Run(c Config) {
 
 	//get ip
 	endpoint, err := url.Parse(c.Endpoint)
-	if c.Endpoint != "" && err != nil {
+	if c.Endpoint == "" {
+		endpoint = nil
+	} else if err != nil {
 		log.Fatal("Invalid endpoint: %s", err)
 	}
 
