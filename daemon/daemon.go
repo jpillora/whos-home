@@ -22,12 +22,19 @@ type Config struct {
 	Interval   time.Duration `help:"the interval between scans"`
 	Endpoint   string        `help:"an HTTP POST endpoint (defaults to send to stdout)"`
 	SingleCore bool          `help:"only use a single core (defaults to multicore)"`
+	CacheDNS   bool          `help:"cache dns responses"`
 }
+
+var DNScache = map[string]string(nil)
 
 func Run(c Config) {
 
 	//logs to stderr
 	log.SetOutput(os.Stderr)
+
+	if c.CacheDNS {
+		DNScache = map[string]string{}
+	}
 
 	//get ip
 	endpoint, err := url.Parse(c.Endpoint)
@@ -100,8 +107,6 @@ func monitor(endpoint *url.URL, queue NodeQueue) {
 	}
 }
 
-var DNScache = map[string]string{}
-
 func send(endpoint *url.URL, nodes NodeSet) {
 
 	if len(nodes) == 0 {
@@ -120,8 +125,29 @@ func send(endpoint *url.URL, nodes NodeSet) {
 	req, _ := http.NewRequest("POST", endpoint.String(), bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 
-	//hook dns
-	transport := http.Transport{
+	//cache dns?
+	var client *http.Client
+	if DNScache == nil {
+		client = http.DefaultClient
+	} else {
+		client = dnsCachingClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("send failed: %s", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := ioutil.ReadAll(resp.Body)
+		log.Printf("send error: %d: %s", resp.StatusCode, b)
+		return
+	}
+}
+
+var dnsCachingClient = &http.Client{
+	Transport: &http.Transport{
 		DialTLS: func(network, addr string) (net.Conn, error) {
 			if network != "tcp" {
 				return nil, errors.New("unsupported network")
@@ -141,17 +167,5 @@ func send(endpoint *url.URL, nodes NodeSet) {
 				ServerName: h,
 			})
 		},
-	}
-
-	resp, err := transport.RoundTrip(req)
-	if err != nil {
-		log.Printf("send failed: %s", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := ioutil.ReadAll(resp.Body)
-		log.Printf("send error: %d: %s", resp.StatusCode, b)
-		return
-	}
+	},
 }
